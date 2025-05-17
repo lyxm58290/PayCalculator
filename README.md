@@ -1,10 +1,10 @@
-# Payper Plan
+# 📝Payper Plan
 
 ## Personal Project
 
 As a part-time tuition teacher and full-time university student, I often struggled to keep track of student lesson records — with frequent rescheduling, last-minute cancellations, and changing lesson timings. Managing all these while juggling schoolwork made monthly pay calculations a real hassle.
 
-This personal project was created to help others like me — students who tutor on the side — track lessons and calculate monthly pay automatically and fuss-free.
+This personal project was created to help others like me — students who tutor on the side — track lessons and calculate monthly pay automatically and fuss-free. 💻
 
 #### What this project uses:
 - Telegram Bot (set up via @BotFather)
