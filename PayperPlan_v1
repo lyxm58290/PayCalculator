@@ -1,0 +1,484 @@
+// configuration
+var apiToken = ""; // Add your own token
+var appUrl = ""; // Add in your App Script URL
+var apiUrl = "https://api.telegram.org/bot" + apiToken;
+var spreadsheetId = ""; // Add your spreadsheet ID here
+var BOT_USERNAME = "@PayperPlanBot";
+
+// States for conversation management
+var STATE = {
+  NONE: 0,
+  ADD_STUDENT: 1,
+  ADD_DATE: 2,
+  ADD_HOURS: 3,
+  ADD_RATE: 4,
+  SUMMARY_STUDENT: 5,
+  SUMMARY_MONTH: 6,
+  DELETE_STUDENT: 7,
+  DELETE_DATE: 8,
+};
+
+// Set webhook
+function setWebhook() {
+  var url = apiUrl + "/setwebhook?url=" + appUrl;
+  var res = UrlFetchApp.fetch(url).getContentText();
+  Logger.log(res);
+}
+
+// Save user state
+function saveUserState(userId, state, data) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var sheet = ss.getSheetByName("user_states");
+  
+  // Find if user already exists
+  var values = sheet.getDataRange().getValues();
+  for (var i = 0; i < values.length; i++) {
+    if (values[i][0] == userId) {
+      sheet.getRange(i + 1, 2).setValue(state);
+      sheet.getRange(i + 1, 3).setValue(JSON.stringify(data || {}));
+      return;
+    }
+  }
+  
+  // Add new user
+  sheet.appendRow([userId, state, JSON.stringify(data || {})]);
+}
+
+// Get user state
+function getUserState(userId) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var sheet = ss.getSheetByName("user_states");
+  
+  var values = sheet.getDataRange().getValues();
+  for (var i = 0; i < values.length; i++) {
+    if (values[i][0] == userId) {
+      var data = {};
+      try {
+        data = JSON.parse(values[i][2] || "{}");
+      } catch (e) {
+        // If parsing fails, use empty object
+      }
+      return {
+        state: values[i][1],
+        data: data
+      };
+    }
+  }
+  
+  return { state: STATE.NONE, data: {} };
+}
+
+// Handle webhook
+function doPost(e) {
+  var webhookData = JSON.parse(e.postData.contents);
+  
+  if (webhookData.message) {
+    var userId = webhookData.message.from.id;
+    var text = webhookData.message.text;
+    var chatId = webhookData.message.chat.id;
+    
+    // Handle commands
+    if (text && text.startsWith("/")) {
+      handleCommands(text, userId, chatId);
+    } else {
+      handleConversation(text, userId, chatId);
+    }
+  }
+}
+
+// Handle commands
+function handleCommands(text, userId, chatId) {
+  var command = text.split(" ")[0].toLowerCase();
+  
+  switch (command) {
+    case "/start":
+      sendMessage(chatId, "Hello! I'm your Tutor Payment Calculator Bot. Use /help to see available commands.");
+      saveUserState(userId, STATE.NONE, {});
+      break;
+      
+    case "/help":
+      var helpText = 
+        "📚 Available commands:\n\n" +
+        "/start - Start the bot\n" +
+        "/help - Show this help message\n" +
+        "/about - Learn about this bot\n" +
+        "/add - Add a new lesson record\n" +
+        "/summary - Get payment summary for a specific student and month\n" +
+        "/delete - Delete a specific lesson record\n" +
+        "/cancel - Cancel the current operation\n\n" +
+        "📋 How to use:\n" +
+        "1. Use /add to record each lesson you teach\n" +
+        "2. Use /summary to see how much a student owes for a month\n" +
+        "3. Use /delete to remove incorrect entries";
+      sendMessage(chatId, helpText);
+      break;
+      
+    case "/about":
+      sendMessage(chatId, "Hi there! 👋 I am a chatbot built to help tuition teachers calculate their monthly pay—easily and accurately. As a tutor, juggling multiple students with different schedules and lesson times can be a headache. Lesson timings change, students cancel, and it's easy to lose track. That is where I come in. Just tell me the details, and I will help you calculate how much each student owes you at the end of the month—no spreadsheets, no stress.");
+      break;
+      
+    case "/add":
+      sendMessage(chatId, "Enter the student's name:");
+      saveUserState(userId, STATE.ADD_STUDENT, {});
+      break;
+      
+    case "/summary":
+      sendMessage(chatId, "Enter student name:");
+      saveUserState(userId, STATE.SUMMARY_STUDENT, {});
+      break;
+    
+    case "/delete":
+      sendMessage(chatId, "Enter the student's name to delete:");
+      saveUserState(userId, STATE.DELETE_STUDENT, {});
+      break;
+      
+    case "/cancel":
+      sendMessage(chatId, "Operation cancelled.");
+      saveUserState(userId, STATE.NONE, {});
+      break;
+      
+    default:
+      sendMessage(chatId, "Command not recognized. Use /help to see available commands.");
+  }
+}
+
+function createStudentSheetIfNotExists(studentName) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var safeName = studentName.replace(/[^\w\s]/gi, "").substring(0, 100); // sanitize
+  var sheet = ss.getSheetByName(safeName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(safeName);
+    sheet.appendRow(["student", "date", "hours", "rate", "total"]);
+  }
+}
+
+// Handle conversation based on state
+function handleConversation(text, userId, chatId) {
+  var userState = getUserState(userId);
+  var state = userState.state;
+  var data = userState.data;
+  
+  switch (parseInt(state)) {
+    case STATE.ADD_STUDENT:
+      data.student = text.trim();
+      createStudentSheetIfNotExists(data.student);
+      saveUserState(userId, STATE.ADD_DATE, data);
+      sendMessage(chatId, "Enter the date (DD/MM/YY):");
+      break;
+      
+    case STATE.ADD_DATE:
+      data.date = (text.trim()).toString();
+      data.date = "'" + data.date;
+      saveUserState(userId, STATE.ADD_HOURS, data);
+      sendMessage(chatId, "Enter the number of hours (e.g., 1.5):");
+      break;
+      
+    case STATE.ADD_HOURS:
+      try {
+        var hours = parseFloat(text.trim());
+        if (isNaN(hours)) {
+          sendMessage(chatId, "Please enter a valid number (e.g., 1.5)");
+          return;
+        }
+        data.hours = hours;
+        saveUserState(userId, STATE.ADD_RATE, data);
+        sendMessage(chatId, "Enter the hourly rate (e.g., 45):");
+      } catch (e) {
+        sendMessage(chatId, "Please enter a valid number (e.g., 1.5)");
+      }
+      break;
+      
+    case STATE.ADD_RATE:
+      try {
+        var rate = parseFloat(text.trim());
+        if (isNaN(rate)) {
+          sendMessage(chatId, "Please enter a valid rate (e.g., 45)");
+          return;
+        }
+
+        Logger.log("Parsed rate: " + rate);
+        Logger.log("Incoming data: " + JSON.stringify(data));
+
+        if (!data.hours || isNaN(data.hours)) {
+          sendMessage(chatId, "Something went wrong. Please start again by entering the number of hours.");
+          saveUserState(userId, STATE.ADD_HOURS, {});
+          return;
+        }
+
+        var total = Math.round(rate * data.hours * 100) / 100;
+        Logger.log("Calculated total: " + total);
+
+        var record = {
+          student: data.student,
+          date: data.date,
+          hours: data.hours,
+          rate: rate,
+          total: total
+        };
+
+        Logger.log("Record to save: " + JSON.stringify(record));
+
+        saveRecord(record); // <---- THIS could be throwing an error
+
+        var message = 
+          "Saved ✅\n\n" +
+          "Student: " + record.student + "\n" +
+          "Date: " + record.date + "\n" +
+          "Hours: " + record.hours + " hrs\n" +
+          "Rate: $" + record.rate + "/hr\n" +
+          "Total: $" + record.total;
+
+        sendMessage(chatId, message);
+        saveUserState(userId, STATE.NONE, {});
+      } catch (e) {
+        Logger.log("ERROR in ADD_RATE: " + e.message);
+        sendMessage(chatId, "Please enter a valid rate (e.g., 45)");
+      }
+      break;
+      
+    case STATE.SUMMARY_STUDENT:
+      data.summary_student = text.trim();
+      saveUserState(userId, STATE.SUMMARY_MONTH, data);
+      sendMessage(chatId, "Enter month/year (e.g., 04/25):");
+      break;
+      
+    case STATE.SUMMARY_MONTH:
+      try {
+        var student = data.summary_student;
+        var monthYear = text.trim();
+        
+        // Add logging to debug
+        Logger.log("Getting records for student: " + student + " in month: " + monthYear);
+        
+        var records = getStudentRecords(student, monthYear);
+        Logger.log("Found " + records.length + " records");
+        
+        if (records.length === 0) {
+          sendMessage(chatId, "No records found for " + student + " in " + monthYear);
+        } else {
+          // Calculate summary statistics
+          var totalAmount = 0;
+          var totalHours = 0;
+          
+          // Use try-catch around calculations to catch any errors
+          try {
+            records.forEach(function(record) {
+              Logger.log("Processing record: " + JSON.stringify(record));
+              totalAmount += parseFloat(record.total) || 0;
+              totalHours += parseFloat(record.hours) || 0;
+            });
+            
+            var lessonCount = records.length;
+            
+            var summaryText = 
+              "📊 MONTHLY SUMMARY - " + monthYear + " 📊\n" +
+              "Student: " + student + "\n" +
+              "───────────────────────────\n" +
+              "📝 TOTAL DUE: $" + totalAmount.toFixed(2) + "\n" +
+              "⏱️ Total Hours: " + totalHours.toFixed(2) + "\n" +
+              "🗓️ Lessons: " + lessonCount + "\n\n" +
+              "LESSON DETAILS:\n" +
+              "───────────────────────────\n";
+              
+            var detailText = "";
+            records.forEach(function(record) {
+              detailText += record.date + ": " + record.hours + " hrs @ $" + record.rate + "/hr → $" + record.total + "\n";
+            });
+            
+            // Check if the message is too long for Telegram
+            if ((summaryText + detailText).length > 4000) {
+              // If too long, send summary first, then details in chunks
+              sendMessage(chatId, summaryText + "Sending lesson details in separate message...");
+              
+              // Send details in chunks if needed
+              var chunks = splitLongMessage(detailText);
+              chunks.forEach(function(chunk) {
+                sendMessage(chatId, chunk);
+              });
+            } else {
+              // Send complete message
+              sendMessage(chatId, summaryText + detailText);
+            }
+          } catch (calcError) {
+            Logger.log("Error in calculations: " + calcError);
+            sendMessage(chatId, "An error occurred while calculating the summary. Please try again.");
+          }
+        }
+      } catch (e) {
+        Logger.log("Error in summary: " + e);
+        sendMessage(chatId, "An error occurred while generating the summary. Please try again.");
+      }
+      
+      saveUserState(userId, STATE.NONE, {});
+      break;
+      
+    case STATE.DELETE_STUDENT:
+      data.delete_student = text.trim();
+      saveUserState(userId, STATE.DELETE_DATE, data);
+      sendMessage(chatId, "Enter the date of the record to delete (e.g., 13/04/25):");
+      break;
+      
+    case STATE.DELETE_DATE:
+      var student = data.delete_student;
+      var date = text.trim();
+      
+      var success = deleteRecord(student, date);
+      
+      if (success) {
+        sendMessage(chatId, "Deleted record for " + student + " on " + date + ".");
+      } else {
+        sendMessage(chatId, "No matching record found for " + student + " on " + date + ".");
+      }
+      
+      saveUserState(userId, STATE.NONE, {});
+      break;
+      
+    default:
+      // If no state or command is specified, give a helpful message
+      var processedText = text.toLowerCase();
+      var response = "";
+      
+      if (processedText.includes("hello") || processedText.includes("hi")) {
+        response = "Hey there! Use /help to see what I can do.";
+      } else if (processedText.includes("payment") || processedText.includes("calculate") || processedText.includes("amount")) {
+        response = "To calculate payments, use /summary to get a monthly summary for a student.";
+      } else if (processedText.includes("add") || processedText.includes("record") || processedText.includes("lesson")) {
+        response = "To add a new lesson record, use the /add command.";
+      } else if (processedText.includes("delete") || processedText.includes("remove")) {
+        response = "To delete a lesson record, use the /delete command.";
+      } else if (processedText.includes("help")) {
+        response = "Use /help to see all available commands.";
+      } else {
+        response = "I'm your Tutor Payment Calculator Bot. Use /help to see available commands.";
+      }
+      
+      sendMessage(chatId, response);
+  }
+}
+
+// Helper function to send message
+function sendMessage(chatId, text) {
+  var url = apiUrl + "/sendmessage?parse_mode=HTML&chat_id=" + chatId + "&text=" + encodeURIComponent(text);
+  var opts = { "muteHttpExceptions": true };
+  return UrlFetchApp.fetch(url, opts).getContentText();
+}
+
+// Helper function to save record to spreadsheet
+function saveRecord(record) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var sheet = ss.getSheetByName(record.student);
+  
+  // Ensire numbers are stored as numbers, not strings
+  var hours = parseFloat(record.hours);
+  var rate = parseFloat(record.rate);
+  var total = parseFloat(record.total);
+
+  sheet.appendRow([record.student, record.date, record.hours, record.rate, record.total]);
+}
+
+// Helper function to get student records
+// Improved helper function to get student records
+function getStudentRecords(student, monthYear) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var sheet = ss.getSheetByName(student);
+  if (!sheet) return [];
+
+  var values = sheet.getDataRange().getValues();
+  var records = [];
+
+  Logger.log(values)
+  Logger.log(values.length)
+
+  for (var i = 1; i < values.length; i++) {
+    var col = values[i];
+    if (col.length < 5) continue;
+
+    var date = col[1]; // assume column B is "date"
+    
+    // Logger.log(date)
+    // date: "30/04/25" → slice from index 3 ("/04/25")
+    var date = col[1]; // "30/04/25"
+    var dateMonthYear = date.substring(3); // "04/25"
+    var same_date = (dateMonthYear === monthYear);
+
+    Logger.log(same_date)
+
+    if (same_date) {
+      records.push({
+        student: col[0],
+        date: col[1],
+        hours: col[2],
+        rate: col[3],
+        total: col[4]
+      });
+    }
+  }
+  Logger.log(records)
+  return records;
+}
+
+// Helper function to split long messages
+function splitLongMessage(text, maxLength = 4000) {
+  var chunks = [];
+  var currentChunk = "";
+  var lines = text.split("\n");
+  
+  for (var i = 0; i < lines.length; i++) {
+    if ((currentChunk + lines[i] + "\n").length > maxLength) {
+      // Current line would make chunk too long, save current chunk and start new one
+      if (currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+      }
+      
+      // If a single line is too long, split it
+      if (lines[i].length > maxLength) {
+        var line = lines[i];
+        while (line.length > 0) {
+          chunks.push(line.substring(0, maxLength));
+          line = line.substring(maxLength);
+        }
+      } else {
+        currentChunk = lines[i] + "\n";
+      }
+    } else {
+      currentChunk += lines[i] + "\n";
+    }
+  }
+  
+  // Add the last chunk if not empty
+  if (currentChunk) {
+    chunks.push(currentChunk);
+  }
+  
+  return chunks;
+}
+
+// Helper function to delete record
+function deleteRecord(student, date) {
+  var ss = SpreadsheetApp.openById(spreadsheetId);
+  var sheet = ss.getSheetByName(student);
+  var data = sheet.getDataRange().getValues();
+  var rowToDelete = -1;
+  
+  // Find the row to delete
+  for (var i = 0; i < data.length; i++) {
+    if (data[i][0].toLowerCase() === student.toLowerCase() && data[i][1] === date) {
+      rowToDelete = i + 1; // +1 because sheets are 1-indexed
+      break;
+    }
+  }
+  
+  // Delete the row if found
+  if (rowToDelete > 0) {
+    sheet.deleteRow(rowToDelete);
+    return true;
+  }
+  
+  return false;
+}
+
+function doGet(e) {
+  return ContentService.createTextOutput("Method GET not allowed");
+}
