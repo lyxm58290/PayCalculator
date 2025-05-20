@@ -16,6 +16,8 @@ var STATE = {
   SUMMARY_MONTH: 6,
   DELETE_STUDENT: 7,
   DELETE_DATE: 8,
+  ADD_STARTTIME: 9,
+  ADD_ENDTIME: 10,
 };
 
 // Set webhook
@@ -149,7 +151,7 @@ function createStudentSheetIfNotExists(studentName) {
   
   if (!sheet) {
     sheet = ss.insertSheet(safeName);
-    sheet.appendRow(["student", "date", "hours", "rate", "total"]);
+    sheet.appendRow(["student", "date", "startTime", "endTime", "hours", "rate", "total"]);
   }
 }
 
@@ -170,23 +172,30 @@ function handleConversation(text, userId, chatId) {
     case STATE.ADD_DATE:
       data.date = (text.trim()).toString();
       data.date = "'" + data.date;
-      saveUserState(userId, STATE.ADD_HOURS, data);
-      sendMessage(chatId, "Enter the number of hours (e.g., 1.5):");
+      saveUserState(userId, STATE.ADD_STARTTIME, data);
+      sendMessage(chatId, "Enter start time (e.g., 12:00):");
+      break;
+
+    case STATE.ADD_STARTTIME:
+      data.startTime = text.trim();
+      data.startTime = "'" + data.startTime;
+      saveUserState(userId, STATE.ADD_ENDTIME, data);
+      sendMessage(chatId, "Enter end time (e.g., 13:00):");
       break;
       
-    case STATE.ADD_HOURS:
-      try {
-        var hours = parseFloat(text.trim());
-        if (isNaN(hours)) {
-          sendMessage(chatId, "Please enter a valid number (e.g., 1.5)");
-          return;
-        }
-        data.hours = hours;
-        saveUserState(userId, STATE.ADD_RATE, data);
-        sendMessage(chatId, "Enter the hourly rate (e.g., 45):");
-      } catch (e) {
-        sendMessage(chatId, "Please enter a valid number (e.g., 1.5)");
+    case STATE.ADD_ENDTIME:
+      data.endTime = text.trim();
+      data.endTime = "'" + data.endTime;
+      var hours = calculateHours(data.startTime , data.endTime);
+      if (hours <= 0){
+        sendMessage(chatID, "End time must be after start time. Please enter the start time again");
+        saveUserState(userID, STATE.ADD_START_TIME, data);
+        break;
       }
+
+      data.hours = hours;
+      saveUserState(userId, STATE.ADD_RATE, data);
+      sendMessage(chatId, "Enter hourly rate (e.g., 45):");
       break;
       
     case STATE.ADD_RATE:
@@ -212,6 +221,8 @@ function handleConversation(text, userId, chatId) {
         var record = {
           student: data.student,
           date: data.date,
+          startTime: data.startTime,
+          endTime: data.endTime,
           hours: data.hours,
           rate: rate,
           total: total
@@ -224,7 +235,8 @@ function handleConversation(text, userId, chatId) {
         var message = 
           "Saved ✅\n\n" +
           "Student: " + record.student + "\n" +
-          "Date: " + record.date + "\n" +
+          "Date: " + record.date.substring(1) + "\n" +
+          "Timing: " + record.startTime.substring(1) + " - " + record.endTime.substring(1) + "\n" +
           "Hours: " + record.hours + " hrs\n" +
           "Rate: $" + record.rate + "/hr\n" +
           "Total: $" + record.total;
@@ -276,14 +288,14 @@ function handleConversation(text, userId, chatId) {
               "Student: " + student + "\n" +
               "───────────────────────────\n" +
               "📝 TOTAL DUE: $" + totalAmount.toFixed(2) + "\n" +
-              "⏱️ Total Hours: " + totalHours.toFixed(2) + "\n" +
+              "⏱️ Total Hours: " + totalHours.toFixed(2) + "\n" +      
               "🗓️ Lessons: " + lessonCount + "\n\n" +
               "LESSON DETAILS:\n" +
-              "───────────────────────────\n";
-              
+              "───────────────────────────\n";            
+            
             var detailText = "";
             records.forEach(function(record) {
-              detailText += record.date + ": " + record.hours + " hrs @ $" + record.rate + "/hr → $" + record.total + "\n";
+              detailText += record.date + " " + record.startTime + " - " + record.endTime + ": " + record.hours + " hrs @ $" + record.rate + "/hr → $" + record.total + "\n";
             });
             
             // Check if the message is too long for Telegram
@@ -333,7 +345,7 @@ function handleConversation(text, userId, chatId) {
       
       saveUserState(userId, STATE.NONE, {});
       break;
-      
+
     default:
       // If no state or command is specified, give a helpful message
       var processedText = text.toLowerCase();
@@ -374,7 +386,7 @@ function saveRecord(record) {
   var rate = parseFloat(record.rate);
   var total = parseFloat(record.total);
 
-  sheet.appendRow([record.student, record.date, record.hours, record.rate, record.total]);
+  sheet.appendRow([record.student, record.date, record.startTime, record.endTime, record.hours, record.rate, record.total]);
 }
 
 // Helper function to get student records
@@ -408,9 +420,11 @@ function getStudentRecords(student, monthYear) {
       records.push({
         student: col[0],
         date: col[1],
-        hours: col[2],
-        rate: col[3],
-        total: col[4]
+        startTime : col[2],
+        endTime: col[3],
+        hours: col[4],
+        rate: col[5],
+        total: col[6]
       });
     }
   }
@@ -453,6 +467,16 @@ function splitLongMessage(text, maxLength = 4000) {
   }
   
   return chunks;
+}
+
+function calculateHours(start, end) {
+  var date = "01/01/2000 "; // arbitrary fixed date to parse times
+  var startTime = new Date(date + start);
+  var endTime = new Date(date + end);
+  
+  var diffMs = endTime - startTime;
+  var diffHours = diffMs / (1000 * 60 * 60);
+  return Math.round(diffHours * 100) / 100; // round to 2 decimal places
 }
 
 // Helper function to delete record
